@@ -1,6 +1,6 @@
 # xeno-lvb
 
-A tool to extract gimmick disposition files (`.lvb`) from Xenoblade 2 and 3.
+A tool to extract gimmick disposition files (`.lvb`) from Xenoblade 2 and 3, modified for Xeno Series Wiki purposes.
 
 ## Differences from [original fork](https://github.com/roccodev/xeno-lvb)
 

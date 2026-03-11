@@ -189,13 +189,10 @@ class Place():
             self.insert_location_not_as_sublocation(location)
 
     def to_json(self):
-        if self.places == []:
-            return {"bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names) }
-        else:
-            return {
-                "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names), # for debugging; TODO: remove
-                "places": self.places
-            }
+        return {
+            "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names), # for debugging; TODO: remove
+            "places": self.places
+        }
 
 def get_lvb_filename(unpack_xbtool_path: Path, dlc: str, region: str) -> Path:
     """
