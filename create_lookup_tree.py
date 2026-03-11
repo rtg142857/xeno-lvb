@@ -118,47 +118,68 @@ class RestSpot():
     """
     Represents the data for a Rest Spot. Has self.COMU, self.bdat_id, self.polygon, self.lb, and self.ub.
 
-    Asserts that the shape is 2 (a sphere), but functionally defines the polygon as a vertical 32-gonal prism.
+    If the shape is 2 (a sphere), functionally defines the polygon as a vertical 32-gonal prism.
+    If it's 3 (a cuboid), it's a cuboid.
     """
     def __init__(self, comu_entry: dict):
         self.COMU = comu_entry
         self.bdat_id = get_from_entry(comu_entry, "bdat_id")
 
-        assert get_from_entry(comu_entry, "shape") == 2
+        shape = get_from_entry(comu_entry, "shape")
         xform = get_from_entry(comu_entry, "xform")
 
-        centre_xz = [xform[0], xform[2]]
-        centre_y = xform[1]
-        xScl = xform[12] # we assert it's a sphere, so applies to all 3 directions; xScl represents the diameter
-        self.lb = centre_y - xScl/2
-        self.ub = centre_y + xScl/2
+        match shape:
+            case 2: # sphere
+                centre_y = xform[1]
+                xScl = xform[12] # we assert it's a sphere, so applies to all 3 directions; xScl represents the diameter
+                self.lb = centre_y - xScl/2
+                self.ub = centre_y + xScl/2
 
-        self.polygon = Point(centre_xz).buffer(xScl/2) # technically a 32-gon
+                centre_xz = [xform[0], xform[2]]
+                self.polygon = Point(centre_xz).buffer(xScl/2) # technically a 32-gon
 
-class PointOfInterest():
-    """
-    General class for objects which exist at a specific point.
-    Used for non-location entities: NPCs, enemy spawnpoints, ...
-    """
-    def __init__(self, lvb_entry: dict, lvb_data: dict, magic: str):
-        """
-        Takes in an lvb entry, the entire lvb dict (just in case it's needed to get the points), and the magic
+            case 3: # cuboid
+                centre_y = xform[1]
+                yScl = xform[13]
+                self.lb = centre_y - yScl/2
+                self.ub = centre_y + yScl/2
 
-        Initialises self.bdat_id, self.magic, self.points
-        """
-        if magic == "NPC ":
-            magic = "NPC"
-        self.magic = magic
-        self.bdat_id = get_from_entry(lvb_entry, "bdat_id")
-
-        match magic:
-            case "TBOX" | "PREC" | "RBOX" | "ETHP" | "ARCH" | "ENSP" | "EAFF" | "ENFO" | "KIEV":
-                # single point
+                #centre_xy = [xform[0], xform[2]]
+                xScl = xform[12]
+                zScl = xform[14]
+                points = [[xform[0] + xScl/2, xform[2] + zScl/2],
+                          [xform[0] - xScl/2, xform[2] + zScl/2],
+                          [xform[0] - xScl/2, xform[2] - zScl/2],
+                          [xform[0] + xScl/2, xform[2] - zScl/2]]
+                self.polygon = Polygon(points)
+            case _:
+                raise AssertionError
                 
-            case "ENMY":
-                pass
-            case "NPC":
-                pass
+
+# class PointOfInterest():
+#     """
+#     General class for objects which exist at a specific point.
+#     Used for non-location entities: NPCs, enemy spawnpoints, ...
+#     """
+#     def __init__(self, lvb_entry: dict, lvb_data: dict, magic: str):
+#         """
+#         Takes in an lvb entry, the entire lvb dict (just in case it's needed to get the points), and the magic
+
+#         Initialises self.bdat_id, self.magic, self.points
+#         """
+#         if magic == "NPC ":
+#             magic = "NPC"
+#         self.magic = magic
+#         self.bdat_id = get_from_entry(lvb_entry, "bdat_id")
+
+#         match magic:
+#             case "TBOX" | "PREC" | "RBOX" | "ETHP" | "ARCH" | "ENSP" | "EAFF" | "ENFO" | "KIEV":
+#                 # single point
+                
+#             case "ENMY":
+#                 pass
+#             case "NPC":
+#                 pass
 
 class Place():
     """
@@ -504,7 +525,7 @@ gmk_location_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat
 location_names_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/msg_location_name_en.tsv")
 gmk_location, location_names = get_location_bdats(gmk_location_path, location_names_path)
 
-outpath = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/xeno-lvb/output/{region}_tree.json")
+outpath = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/xeno-lvb/output/{region}_tree_with_rs.json")
 outfile = open(outpath, "w+", encoding="utf-8-sig")
 outfile.write(json.dumps(place_tree, indent=1))
 outfile.close()
