@@ -20,7 +20,7 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
-# Dependencies: xeno_lvb.py from https://github.com/roccodev/xeno-lvb (but modify Info.to_json to remove the <>, and modify Default.to_json to always return the bytes)
+# Dependencies: xeno_lvb.py
 # The below libraries
 # A dumped version of (your own copy of) Xenoblade 3's data, with all 4 DLCs
 from __future__ import annotations # deprecated if using python 3.14+
@@ -105,7 +105,7 @@ class Location():
         
     def append_component(self, component: LocationComponent):
         """
-        Adds a new LocationComponent to the location. Component must have the same bdat_id (and ub/lb?) as the preexisting ones.
+        Adds a new LocationComponent to the location. Component must have the same bdat_id as the preexisting ones.
         """
         assert component.bdat_id == self.bdat_id
 
@@ -323,8 +323,6 @@ def initialise_region(region: str) -> Location:
     Takes in a region ID, purely for naming.
     Makes a "root" Location in the style of get_location_data to represent an entire region.
     Basically a cube 2e6 to a side, centred on the origin, with dummy other data.
-
-    if ur reading this, ligma balls
     """
     LOCA = {"info": {"bdat_id": region}, "xform": [0,0,0,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,2e6,0,0], "bytes": "00000000"}
     CNTP = [
