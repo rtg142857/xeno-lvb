@@ -28,7 +28,7 @@ from xeno_lvb import Lvb
 import json
 from pathlib import Path
 import numpy as np
-from shapely import Polygon, unary_union
+from shapely import Polygon, unary_union, Point
 import pandas as pd
 
 from json import JSONEncoder
@@ -114,12 +114,60 @@ class Location():
         self.components.append(component)
         self.polygon = component.polygon.union(self.polygon)
 
+class RestSpot():
+    """
+    Represents the data for a Rest Spot. Has self.COMU, self.bdat_id, self.polygon, self.lb, and self.ub.
+
+    Asserts that the shape is 2 (a sphere), but functionally defines the polygon as a vertical 32-gonal prism.
+    """
+    def __init__(self, comu_entry: dict):
+        self.COMU = comu_entry
+        self.bdat_id = get_from_entry(comu_entry, "bdat_id")
+
+        assert get_from_entry(comu_entry, "shape") == 2
+        xform = get_from_entry(comu_entry, "xform")
+
+        centre_xz = [xform[0], xform[2]]
+        centre_y = xform[1]
+        xScl = xform[12] # we assert it's a sphere, so applies to all 3 directions; xScl represents the diameter
+        self.lb = centre_y - xScl/2
+        self.ub = centre_y + xScl/2
+
+        self.polygon = Point(centre_xz).buffer(xScl/2) # technically a 32-gon
+
+class PointOfInterest():
+    """
+    General class for objects which exist at a specific point.
+    Used for non-location entities: NPCs, enemy spawnpoints, ...
+    """
+    def __init__(self, lvb_entry: dict, lvb_data: dict, magic: str):
+        """
+        Takes in an lvb entry, the entire lvb dict (just in case it's needed to get the points), and the magic
+
+        Initialises self.bdat_id, self.magic, self.points
+        """
+        if magic == "NPC ":
+            magic = "NPC"
+        self.magic = magic
+        self.bdat_id = get_from_entry(lvb_entry, "bdat_id")
+
+        match magic:
+            case "TBOX" | "PREC" | "RBOX" | "ETHP" | "ARCH" | "ENSP" | "EAFF" | "ENFO" | "KIEV":
+                # single point
+                
+            case "ENMY":
+                pass
+            case "NPC":
+                pass
+
 class Place():
     """
     Represents the data for a location and all its sublocations.
     Sublocations are also represented by Places.
+
+    In the following, "Location" only requires the existence of lb, ub, and polygon methods. In reality, all relevant functions can take either a Location or a RestSpot.
     """
-    def __init__(self, location: Location, subplaces: list[Place]=[]) -> None:
+    def __init__(self, location: Location | RestSpot, subplaces: list[Place]=[]) -> None:
         """
         Takes in a Location and, optionally, a list of Places to be the sublocations.
         Initialises self.bdat_id, self.data, self.places.
@@ -137,7 +185,7 @@ class Place():
     def remove_subplaces(self, subplace_indices_to_remove: list):
         self.places = [place for i, place in enumerate(self.places) if not subplace_indices_to_remove[i]]
 
-    def insert_location_not_as_sublocation(self, location: Location):
+    def insert_location_not_as_sublocation(self, location: Location | RestSpot):
         """
         Converts a location to a place and inserts it directly to self's list of subplaces.
         If anything in the current list of places is a sublocation, removes them from the current list
@@ -156,7 +204,7 @@ class Place():
         new_place = Place(location, subplaces_of_location)
         self.insert_subplace_directly(new_place)
 
-    def insert_location_recursive(self, location: Location):
+    def insert_location_recursive(self, location: Location | RestSpot):
         """
         Makes a location into a place and inserts it where it should go in the list of subplaces.
         If any current subplaces are a sublocation to it, removes them from the list and adds them as the location's list of subplaces.
@@ -315,6 +363,17 @@ def get_location_data(lvb_dict: dict, verbose=False) -> list[Location]:
         location_list.append(location)
     return location_list
 
+def get_rest_spot_data(lvb_dict: dict, verbose=False) -> list[RestSpot]:
+    rest_spot_list = []
+    for dlc in lvb_dict.keys():
+        if verbose:
+            print(f"Converting rest spot data for DLC {dlc}")
+        comu_data = get_lvb_entries(lvb_dict[dlc], "COMU")
+        for comu_entry in comu_data:
+            rest_spot = RestSpot(comu_entry)
+            rest_spot_list.append(rest_spot)
+    return rest_spot_list
+
 def initialise_region(region: str) -> Location:
     """
     Takes in a region ID, purely for naming.
@@ -332,9 +391,9 @@ def initialise_region(region: str) -> Location:
     location = Location([location_component])
     return location
 
-def location_a_contains_b(location_a: Location, location_b: Location) -> bool:
+def location_a_contains_b(location_a: Location | RestSpot, location_b: Location | RestSpot) -> bool:
     """
-    Takes in two Locations. # (with structure like an entry in get_location_data)
+    Takes in two Locations (or RestSpots). # (with structure like an entry in get_location_data)
     Returns True if the second location is entirely contained within the first, and False otherwise.
 
     For the vertical axis, we only check if the midpoint of the second is contained within the first (there are some locations that are obviously "contained" but where the second actually extends a bit above the first).
@@ -351,28 +410,68 @@ def create_place_tree(lvb_dict: dict, region: str, verbose=False) -> Place:
     and a region ID (e.g. ma01a).
     Returns a tree-style dict structure, where each node corresponds to a location(/landmark/area/etc).
     Each node is a Place, which can have other places as subnodes.
+
+    The place tree is filled with all the LOCA entries (Locations) and COMU entries (Rest Spots).
     """
     if verbose:
         print("Initialising region...")
     place_tree = Place(initialise_region(region))
 
-    if verbose:
-        print("Converting lvb data to Locations...")
-    location_data = get_location_data(lvb_dict, verbose)
-
-    if verbose:
-        num = len(location_data)
-        print(f"Adding {num} locations to the tree...")
-    
-    for i, location in enumerate(location_data):
+    types = [(get_location_data, "locations"),
+             (get_rest_spot_data, "rest spots")]
+    for place_type in types:
+        get_data = place_type[0]
+        name = place_type[1]
 
         if verbose:
-            bdat_id = location.bdat_id
-            print(f"{i+1}/{num}: {bdat_id}")
+            print(f"Converting lvb data to {name}...")
+        location_list = get_data(lvb_dict, verbose)
 
-        place_tree.insert_location_recursive(location)
+        if verbose:
+            num = len(location_list)
+            print(f"Adding {num} {name} to the tree...")
+
+        for i, location in enumerate(location_list):
+            if verbose:
+                bdat_id = location.bdat_id
+                print(f"{i+1}/{num}: {bdat_id}")
+            place_tree.insert_location_recursive(location)
 
     return place_tree
+
+    # ################# Locations ####################
+    # if verbose:
+    #     print("Converting lvb data to Locations...")
+    # location_data = get_location_data(lvb_dict, verbose)
+
+    # if verbose:
+    #     num = len(location_data)
+    #     print(f"Adding {num} locations to the tree...")
+    
+    # for i, location in enumerate(location_data):
+    #     if verbose:
+    #         bdat_id = location.bdat_id
+    #         print(f"{i+1}/{num}: {bdat_id}")
+    #     place_tree.insert_location_recursive(location)
+    
+    # ############### Rest spots ######################
+    # if verbose:
+    #     print("Getting Rest Spot lvb data...")
+    # rest_spot_data = get_rest_spot_data(lvb_dict, verbose)
+
+    # if verbose:
+    #     num = len(rest_spot_data)
+    #     print(f"Adding {num} rest spots to the tree...")
+
+    # for i, rs in enumerate(rest_spot_data):
+    #     if verbose:
+    #         bdat_id = rs.bdat_id
+    #         print(f"{i+1}/{num}: {bdat_id}")
+    #     place_tree.insert_location_recursive(rs)
+
+
+
+#####################################################################
 
 def get_bdat(path: Path) -> pd.DataFrame:
     bdat = pd.read_csv(path, dtype="string", na_filter=False, sep="\t", comment="\t")
