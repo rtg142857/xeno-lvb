@@ -135,10 +135,10 @@ class Info():
 
     def to_json(self):
         return {
-            'bdat_id': f"<{self.bdat_id:08X}>",
+            'bdat_id': f"{self.bdat_id:08X}",
             'shape': self.shape,
             'sequential_id': self.sequential_id,
-            'hash_id': f"<{self.hash_id:08X}>"
+            'hash_id': f"{self.hash_id:08X}"
         }
 
 # XC2 info table
@@ -154,7 +154,8 @@ class InfoLegacy():
 # An object's transformation matrix
 class Xform():
     def __init__(self, entry):
-        self.matrix = [f32(entry[i:]) for i in range(0, 64, 4)]
+        # self.matrix = [f32(entry[i:]) for i in range(0, 64, 4)]
+        self.matrix = [round(f32(entry[i:]), 2) for i in range(0, 64, 4)]
 
     def to_json(self):
         return self.matrix
@@ -183,7 +184,7 @@ class Default():
         self._data = entry
 
     def to_json(self):
-        if __name__ == "__main__" and JSON_INCL_BYTES:
+        if True: #__name__ == "__main__" and JSON_INCL_BYTES:
             return { 'bytes': self._data.hex() }
         return {}
 
