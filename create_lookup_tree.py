@@ -154,32 +154,76 @@ class RestSpot():
                 self.polygon = Polygon(points)
             case _:
                 raise AssertionError
+
+class Coordinate():
+    """
+    A point in 3D space (shapely Points are only in 2d)
+    """
+    def __init__(self, x: float, y: float, z: float):
+        """
+        Initiates self.point, self.y, self.x, self.z
+        """
+        self.x = x
+        self.y = y
+        self.z = z
+        self.point = Point([x, z])
+
+def get_coord_from_entry(lvb_entry: dict) -> Coordinate:
+    """
+    Takes in an lvb entry. Gets its Coordinate.
+    """
+    xform = get_from_entry(lvb_entry, "xform")
+    return Coordinate(xform[0], xform[1], xform[2])
+
+class PointOfInterest():
+    """
+    General class for objects which exist at a specific point.
+    Used for non-location entities: NPCs, enemy spawnpoints, ...
+
+    Location is stored in "coordinates", a list of Coordinate objects, each of which have Coordinate.y and Coordinate.point values for height and xz respectively
+    """
+    def __init__(self, lvb_entry: dict, lvb_data: dict, magic: str):
+        """
+        Takes in an lvb entry, the entire lvb dict FOR THE ENTRY'S DLC (just in case it's needed to get the points), and the magic
+
+        Initialises self.bdat_id, self.magic, self.coordinates
+        """
+        if magic == "NPC ":
+            magic = "NPC"
+        self.magic = magic
+        self.bdat_id = get_from_entry(lvb_entry, "bdat_id")
+
+        match magic:
+            case "TBOX" | "PREC" | "RBOX" | "ETHP" | "ARCH" | "ENSP" | "EAFF" | "ENFO" | "KIEV":
+                # single point
+                self.coordinates = [get_coord_from_entry(lvb_entry)]
+            case "ENMY":
+                # either single point, or get points from the ENEL entries, which are gotten from the ENEM entries
+                enem_idx = get_enem_idx(lvb_entry)
+                print(enem_idx)
+                if hex(enem_idx) == "0xffff":
+                    self.coordinates = [get_coord_from_entry(lvb_entry)]
+                else:
+                    enem_data = get_lvb_entries(lvb_data, "ENEM")
+                    enel_start, enel_end = get_enel_idxs(enem_data[enem_idx])
+
+                    enel_data = get_lvb_entries(lvb_data, "ENEL")
+                    self.coordinates = []
+                    for enel_idx in range(enel_start, enel_end):
+                        self.coordinates.append(get_coord_from_entry(enel_data[enel_idx]))
+            case "NPC":
+                # get range of NPCS entries, each of which has (one of? range of?) NPCL entries
+                npcs_start, npcs_end = get_npcs_idxs(lvb_entry)
                 
-
-# class PointOfInterest():
-#     """
-#     General class for objects which exist at a specific point.
-#     Used for non-location entities: NPCs, enemy spawnpoints, ...
-#     """
-#     def __init__(self, lvb_entry: dict, lvb_data: dict, magic: str):
-#         """
-#         Takes in an lvb entry, the entire lvb dict (just in case it's needed to get the points), and the magic
-
-#         Initialises self.bdat_id, self.magic, self.points
-#         """
-#         if magic == "NPC ":
-#             magic = "NPC"
-#         self.magic = magic
-#         self.bdat_id = get_from_entry(lvb_entry, "bdat_id")
-
-#         match magic:
-#             case "TBOX" | "PREC" | "RBOX" | "ETHP" | "ARCH" | "ENSP" | "EAFF" | "ENFO" | "KIEV":
-#                 # single point
-                
-#             case "ENMY":
-#                 pass
-#             case "NPC":
-#                 pass
+                npcs_data = get_lvb_entries(lvb_data, "NPCS")
+                npcl_data = get_lvb_entries(lvb_data, "NPCL")
+                self.coordinates = []
+                for npcs_idx in range(npcs_start, npcs_end):
+                    npcl_start, npcl_end = get_npcl_idxs(npcs_data[npcs_idx])
+                    for npcl_idx in range(npcl_start, npcl_start+1):# npcl_end): Assuming only one npcl is relevant per npcs; we don't know what the others do
+                        self.coordinates.append(get_coord_from_entry(npcl_data[npcl_idx]))
+            case _:
+                raise AssertionError
 
 class Place():
     """
@@ -347,17 +391,55 @@ def get_from_entry(entry: dict, field: str) -> str | list | int:
         case "bytes":
             return entry["bytes"]
         
+def get_indices_from_entry(entry: dict, offset: int) -> tuple[int, int]:
+    """
+    Takes in a dict representing an entry from an lvb file.
+    Reads the bytes, with some offset of hex digits from the right,
+    and returns a tuple representing the four bytes after that offset,
+    interpreted as two ints (with weird endianness as used by XC3).
+    """
+    bytes = get_from_entry(entry, "bytes")
+    last_high = bytes[-2-offset:-offset]
+    last_low = bytes[-4-offset:-2-offset]
+    first_high = bytes[-6-offset:-4-offset]
+    first_low = bytes[-8-offset:-6-offset]
+    return int(first_high+first_low, 16), int(last_high+last_low, 16)
+
 def get_cntp_indices_from_loca(loca_entry: dict) -> tuple[int, int]:
     """
-    Takes in a dict representing a loca entry from an lvb file.
+    Takes in a dict representing a LOCA entry from an lvb file.
     Returns a tuple: the starting and ending index of the corresponding CNTP entries.
     """
-    bytes = get_from_entry(loca_entry, "bytes")
-    last_high = bytes[-2:]
-    last_low = bytes[-4:-2]
-    first_high = bytes[-6:-4]
-    first_low = bytes[-8:-6]
-    return int(first_high+first_low, 16), int(last_high+last_low, 16)
+    return get_indices_from_entry(loca_entry, 0)
+
+def get_enem_idx(enmy_entry: dict) -> int:
+    """
+    Takes in a dict representing an ENMY entry from an lvb file.
+    Returns the index of the corresponding ENEM entry.
+    """
+    _, idx = get_indices_from_entry(enmy_entry, 8)
+    return idx
+
+def get_enel_idxs(enem_entry: dict) -> tuple[int, int]:
+    """
+    Takes in a dict representing an ENEM entry from an lvb file.
+    Returns a tuple: the starting and ending index of the corresponding ENEL entries.
+    """
+    return get_indices_from_entry(enem_entry, 0)
+
+def get_npcs_idxs(npc_entry: dict) -> tuple[int, int]:
+    """
+    Takes in a dict representing an NPC entry from an lvb file.
+    Returns a tuple: the starting and ending index of the corresponding NPCS entries.
+    """
+    return get_indices_from_entry(npc_entry, 16)
+
+def get_npcl_idxs(npcs_entry: dict) -> tuple[int, int]:
+    """
+    Takes in a dict representing an NPCS entry from an lvb file.
+    Returns a tuple: the starting and ending index of the corresponding NPCL entries.
+    """
+    return get_indices_from_entry(npcs_entry, 24)
 
 def get_location_data(lvb_dict: dict, verbose=False) -> list[Location]:
     """
