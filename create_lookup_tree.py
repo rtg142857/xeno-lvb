@@ -80,6 +80,8 @@ class LocationComponent():
 class Location():
     """
     Represents the data for a set of LocationComponents all corresponding to the same maXXa_GMK_Location entry.
+
+    Has self.bdat_id, self.components, self.polygon, self.lb, self.ub.
     """
     def __init__(self, component_list: list[LocationComponent]):
         """
@@ -229,25 +231,33 @@ class Place():
     """
     Represents the data for a location and all its sublocations.
     Sublocations are also represented by Places.
+    Also contains the data for all points of interest: NPCs, enemy spawns, etc.
+    This latter data is stored in a dict "poi_dict" with keys the same as the magic fields
+    (e.g. "ENMY", "TBOX") and values a list of bdat_ids of entries with that magic.
 
     In the following, "Location" only requires the existence of lb, ub, and polygon methods. In reality, all relevant functions can take either a Location or a RestSpot.
     """
     def __init__(self, location: Location | RestSpot, subplaces: list[Place]=[]) -> None:
         """
         Takes in a Location and, optionally, a list of Places to be the sublocations.
-        Initialises self.bdat_id, self.data, self.places.
+        Initialises self.bdat_id, self.location, self.places, self.poi_dict (points of interest).
         """
         self.bdat_id = location.bdat_id
-        self.data = location
+        self.location = location
         self.places = subplaces
+        self.poi_dict = {}
     
     def insert_subplace_directly(self, subplace: Place):
         """
-        Inserts a Place directly to self's list of subplaces
+        Inserts a Place directly to self's list of subplaces.
         """
         self.places.append(subplace)
     
     def remove_subplaces(self, subplace_indices_to_remove: list):
+        """
+        Takes in a boolean mask with length len(self.places).
+        Removes all places at indices where the mask == True.
+        """
         self.places = [place for i, place in enumerate(self.places) if not subplace_indices_to_remove[i]]
 
     def insert_location_not_as_sublocation(self, location: Location | RestSpot):
@@ -261,7 +271,7 @@ class Place():
         subplaces_of_location = []
         indices_to_remove = [False] * len(self.places)
         for i, place in enumerate(self.places):
-            if location_a_contains_b(location, place.data):
+            if location_a_contains_b(location, place.location):
                 indices_to_remove[i] = True
                 subplaces_of_location.append(place)
 
@@ -285,7 +295,7 @@ class Place():
             # Then put the location in the place list
         order_status = "None"
         for place in self.places:
-            place_data = place.data
+            place_data = place.location
             if location_a_contains_b(place_data, location):
                 assert order_status != "super" # place cannot be a superlocation of one and a sublocation of another on the same level; otherwise the sublocation would be a sub of the superlocation
                 order_status = "sub"
@@ -296,10 +306,41 @@ class Place():
         if order_status == "sub":
             # Recursive step: location is a sublocation of at least one place in the list; add it there instead
             for place in self.places:
-                if location_a_contains_b(place.data, location):
+                if location_a_contains_b(place.location, location):
                     place.insert_location_recursive(location)
         else: # location is not a sublocation of anything, so it should be added to the list directly, and move current places to its place list if they're sublocations as necessary
             self.insert_location_not_as_sublocation(location)
+
+    def insert_poi_directly(self, poi: PointOfInterest):
+        """
+        Inserts a point of interest directly into the current place('s self.poi dict),
+        without considering whether or not it should go into any subplaces (or, indeed, the place itself).
+
+        If it's already there, does nothing.
+        """
+        magic = poi.magic
+        if magic not in self.poi_dict.keys():
+            self.poi_dict[magic] = [poi.bdat_id]
+        else:
+            if poi.bdat_id not in self.poi_dict[magic]:
+                self.poi_dict[magic].append(poi.bdat_id)
+
+    def insert_poi_recursive(self, poi: PointOfInterest):
+        """
+        Inserts a point of interest where it should go in the place's subtree.
+        It may be inserted in multiple subplaces, either because two places in the subtree
+        (neither of which is contained in the other) each contain the poi,
+        or because the poi has multiple coordinates.
+        """
+        for coord in poi.coordinates:
+            insert_directly = True # keeps track of whether or not the poi should be inserted directly, or in one of the subplaces
+            for subplace in self.places:
+                if coordinate_within_location(coord, subplace.location):
+                    insert_directly = False
+                    subplace.insert_poi_recursive(poi)
+            
+            if insert_directly:
+                self.insert_poi_directly(poi)
 
     def to_json(self):
         return {
@@ -496,7 +537,7 @@ def initialise_region(region: str) -> Location:
 
 def location_a_contains_b(location_a: Location | RestSpot, location_b: Location | RestSpot) -> bool:
     """
-    Takes in two Locations (or RestSpots). # (with structure like an entry in get_location_data)
+    Takes in two Locations (or RestSpots).
     Returns True if the second location is entirely contained within the first, and False otherwise.
 
     For the vertical axis, we only check if the midpoint of the second is contained within the first (there are some locations that are obviously "contained" but where the second actually extends a bit above the first).
@@ -506,6 +547,17 @@ def location_a_contains_b(location_a: Location | RestSpot, location_b: Location 
         return False
     
     return location_a.polygon.contains(location_b.polygon)
+
+def coordinate_within_location(coordinate: Coordinate, location: Location | RestSpot) -> bool:
+    """
+    Takes in a coordinate and a location(/RestSpot).
+    Returns True if the coordinate is contained within the location, and False otherwise.
+
+    Assumes that the location is a vertical prism.
+    """
+    y_containment = coordinate.y >= location.lb and coordinate.y <= location.ub
+    xz_containment = location.polygon.contains(coordinate.point)
+    return y_containment and xz_containment
 
 def create_place_tree(lvb_dict: dict, region: str, verbose=False) -> Place:
     """
