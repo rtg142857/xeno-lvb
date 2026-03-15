@@ -30,13 +30,7 @@ from pathlib import Path
 import numpy as np
 from shapely import Polygon, unary_union, Point
 import pandas as pd
-
-from json import JSONEncoder
-def _default(self, obj):
-    return getattr(obj.__class__, "to_json", _default.default)(obj)
-_default.default = JSONEncoder().default
-JSONEncoder.default = _default
-JSON_INCL_BYTES = True
+import sys
 
 class LocationComponent():
     """
@@ -202,7 +196,6 @@ class PointOfInterest():
             case "ENMY":
                 # either single point, or get points from the ENEL entries, which are gotten from the ENEM entries
                 enem_idx = get_enem_idx(lvb_entry)
-                print(enem_idx)
                 if hex(enem_idx) == "0xffff":
                     self.coordinates = [get_coord_from_entry(lvb_entry)]
                 else:
@@ -343,9 +336,19 @@ class Place():
                 self.insert_poi_directly(poi)
 
     def to_json(self):
-        return {
-            "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names), # for debugging; TODO: remove
+        return_dict = {
+            "bdat_id": self.bdat_id,
             "places": self.places
+        }
+        for k, v in self.poi_dict.items():
+            return_dict[k] = v
+        return return_dict
+    
+    def to_json_debug(self):
+        return {
+            "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names),
+            "places": self.places,
+            "poi": self.poi_dict
         }
 
 def get_lvb_filename(unpack_xbtool_path: Path, dlc: str, region: str) -> Path:
@@ -440,7 +443,10 @@ def get_indices_from_entry(entry: dict, offset: int) -> tuple[int, int]:
     interpreted as two ints (with weird endianness as used by XC3).
     """
     bytes = get_from_entry(entry, "bytes")
-    last_high = bytes[-2-offset:-offset]
+    if offset != 0: # index of "-0" gets interpreted as 0, messing up the slicing
+        last_high = bytes[-2-offset:-offset]
+    else:
+        last_high = bytes[-2-offset:]
     last_low = bytes[-4-offset:-2-offset]
     first_high = bytes[-6-offset:-4-offset]
     first_low = bytes[-8-offset:-6-offset]
@@ -518,6 +524,21 @@ def get_rest_spot_data(lvb_dict: dict, verbose=False) -> list[RestSpot]:
             rest_spot_list.append(rest_spot)
     return rest_spot_list
 
+def get_poi_data(lvb_dict: dict, magic: str, verbose=False) -> list[PointOfInterest]:
+    """
+    Takes in an lvb dict of a region as given by get_lvb_data, and a magic str.
+    Returns a list of PointsOfInterest of that magic type in that region.
+    """
+    poi_list = []
+    for dlc in lvb_dict.keys():
+        if verbose:
+            print(f"Converting {magic} data for DLC {dlc}")
+        lvb_data_for_magic = get_lvb_entries(lvb_dict[dlc], magic)
+        for entry in lvb_data_for_magic:
+            poi = PointOfInterest(entry, lvb_dict[dlc], magic)
+            poi_list.append(poi)
+    return poi_list
+
 def initialise_region(region: str) -> Location:
     """
     Takes in a region ID, purely for naming.
@@ -594,39 +615,33 @@ def create_place_tree(lvb_dict: dict, region: str, verbose=False) -> Place:
 
     return place_tree
 
-    # ################# Locations ####################
-    # if verbose:
-    #     print("Converting lvb data to Locations...")
-    # location_data = get_location_data(lvb_dict, verbose)
+def fill_place_tree_with_magic(place_tree: Place, lvb_dict: dict, magic: str, verbose=False):
+    """
+    Takes in a place_tree which has had all its locations/rest spots filled in,
+    and the lvb data for a region as given by get_lvb_data,
+    and a magic str.
+    Fills in the place tree with all the entities of that magic type. 
+    """
+    if verbose:
+        print(f"Processing magic {magic}")
+        print(f"Creating {magic} coordinate data from lvb data...")
 
-    # if verbose:
-    #     num = len(location_data)
-    #     print(f"Adding {num} locations to the tree...")
-    
-    # for i, location in enumerate(location_data):
-    #     if verbose:
-    #         bdat_id = location.bdat_id
-    #         print(f"{i+1}/{num}: {bdat_id}")
-    #     place_tree.insert_location_recursive(location)
-    
-    # ############### Rest spots ######################
-    # if verbose:
-    #     print("Getting Rest Spot lvb data...")
-    # rest_spot_data = get_rest_spot_data(lvb_dict, verbose)
+    poi_data = get_poi_data(lvb_dict, magic)
 
-    # if verbose:
-    #     num = len(rest_spot_data)
-    #     print(f"Adding {num} rest spots to the tree...")
+    if verbose:
+        num = len(poi_data)
+        print(f"Adding {num} {magic} to place tree...")
 
-    # for i, rs in enumerate(rest_spot_data):
-    #     if verbose:
-    #         bdat_id = rs.bdat_id
-    #         print(f"{i+1}/{num}: {bdat_id}")
-    #     place_tree.insert_location_recursive(rs)
+    for i, poi in enumerate(poi_data):
+        if verbose:
+            bdat_id = poi.bdat_id
+            print(f"{i+1}/{num}: {bdat_id}")
 
-
+        place_tree.insert_poi_recursive(poi)
 
 #####################################################################
+
+# Additional debugging stuff
 
 def get_bdat(path: Path) -> pd.DataFrame:
     bdat = pd.read_csv(path, dtype="string", na_filter=False, sep="\t", comment="\t")
@@ -645,21 +660,47 @@ def convert_hashid_to_name(bdat_id: str, gmk_location: pd.DataFrame, location_na
         return bdat_id
     return location_names.loc[name_id, "name"]
 
-region = "ma40a"
-unpack_xbtool_path = Path("C:/Users/rtg14/Desktop/Not_work/My_Programs/XC3_files_2.2.0/unpack_xbtool")
+#############################################################################
 
-print("Getting lvb data...")
-lvb_data = get_lvb_data(region, unpack_xbtool_path, verbose=True)
+# Main for testing
 
-print("Creating place tree...")
-place_tree = create_place_tree(lvb_data, region, verbose=True)
+from json import JSONEncoder
+def _default(self, obj):
+    return getattr(obj.__class__, "to_json", _default.default)(obj)
+_default.default = JSONEncoder().default
+JSONEncoder.default = _default
+JSON_INCL_BYTES = True
 
-print("Writing to file...")
-gmk_location_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/{region}_GMK_Location.tsv")
-location_names_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/msg_location_name_en.tsv")
-gmk_location, location_names = get_location_bdats(gmk_location_path, location_names_path)
+FIELDS_default = ["ENMY", "NPC ", "TBOX", "PREC"]
+FIELDS_ma40a = ["ENMY", "NPC ", "TBOX", "PREC", "RBOX", "ETHP", "ARCH", "ENSP", "EAFF", "ENFO", "KIEV"]
 
-outpath = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/xeno-lvb/output/{region}_tree_with_rs.json")
-outfile = open(outpath, "w+", encoding="utf-8-sig")
-outfile.write(json.dumps(place_tree, indent=1))
-outfile.close()
+if __name__ == "__main__":
+    # region = sys.argv[1]
+    # unpack_xbtool_path = Path(sys.argv[2])
+    # outpath = Path(sys.argv[3])
+    region = "ma40a"
+    unpack_xbtool_path = Path("C:/Users/rtg14/Desktop/Not_work/My_Programs/XC3_files_2.2.0/unpack_xbtool")
+    outpath = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/xeno-lvb/output/{region}_tree_full.json")
+
+    print("Getting lvb data...")
+    lvb_data = get_lvb_data(region, unpack_xbtool_path, verbose=True)
+
+    print("Creating place tree...")
+    place_tree = create_place_tree(lvb_data, region, verbose=True)
+
+    print("Filling place tree with tbox data...")
+    if region == "ma40a":
+        fields = FIELDS_ma40a
+    else:
+        fields = FIELDS_default
+    for magic in fields:
+        fill_place_tree_with_magic(place_tree, lvb_data, magic, verbose=True)
+
+    print("Writing to file...")
+    gmk_location_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/{region}_GMK_Location.tsv")
+    location_names_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/msg_location_name_en.tsv")
+    gmk_location, location_names = get_location_bdats(gmk_location_path, location_names_path)
+
+    outfile = open(outpath, "w+", encoding="utf-8-sig")
+    outfile.write(json.dumps(place_tree, indent=1))
+    outfile.close()
