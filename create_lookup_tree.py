@@ -207,7 +207,7 @@ class PointOfInterest():
                     for enel_idx in range(enel_start, enel_end):
                         self.coordinates.append(get_coord_from_entry(enel_data[enel_idx]))
             case "NPC":
-                # get range of NPCS entries, each of which has (one of? range of?) NPCL entries
+                # get range of NPCS entries, each of which has a range of NPCL entries
                 npcs_start, npcs_end = get_npcs_idxs(lvb_entry)
                 
                 npcs_data = get_lvb_entries(lvb_data, "NPCS")
@@ -215,7 +215,9 @@ class PointOfInterest():
                 self.coordinates = []
                 for npcs_idx in range(npcs_start, npcs_end):
                     npcl_start, npcl_end = get_npcl_idxs(npcs_data[npcs_idx])
-                    for npcl_idx in range(npcl_start, npcl_start+1):# npcl_end): Assuming only one npcl is relevant per npcs; we don't know what the others do
+                    if npcs_single_locator(npcs_data[npcs_idx]):
+                        npcl_end = npcl_start + 1
+                    for npcl_idx in range(npcl_start, npcl_end):
                         self.coordinates.append(get_coord_from_entry(npcl_data[npcl_idx]))
             case _:
                 raise AssertionError
@@ -344,12 +346,12 @@ class Place():
             return_dict[k] = v
         return return_dict
     
-    def to_json_debug(self):
-        return {
-            "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names),
-            "places": self.places,
-            "poi": self.poi_dict
-        }
+    # def to_json_debug(self):
+    #     return {
+    #         "bdat_id": convert_hashid_to_name(self.bdat_id, gmk_location, location_names),
+    #         "places": self.places,
+    #         "poi": self.poi_dict
+    #     }
 
 def get_lvb_filename(unpack_xbtool_path: Path, dlc: str, region: str) -> Path:
     """
@@ -399,7 +401,7 @@ def get_lvb_data(region: str, unpack_xbtool_path: Path, verbose=False) -> dict:
         if lvb_data != None:
             lvb_dict[dlc] = lvb_data
 
-    assert lvb_dict != {}, "No lvb files found. Is the upack_xbtool_path correct?"
+    assert lvb_dict != {}, "No lvb files found. Is the unpack_xbtool_path correct?"
     return lvb_dict
 
 def get_lvb_entries(lvb_data_given_dlc: dict, magic: str) -> list:
@@ -412,7 +414,7 @@ def get_lvb_entries(lvb_data_given_dlc: dict, magic: str) -> list:
     for section in lvb_data_given_dlc["sections"]:
         if section["magic"] == magic:
             return section["entries"]
-    print(f"Lvb data for this DLC has no magic {magic}")
+    #print(f"Lvb data for this DLC has no magic {magic}")
     return []
 
 def get_from_entry(entry: dict, field: str) -> str | list | int:
@@ -488,6 +490,17 @@ def get_npcl_idxs(npcs_entry: dict) -> tuple[int, int]:
     """
     return get_indices_from_entry(npcs_entry, 24)
 
+def npcs_single_locator(npcs_entry: dict) -> bool:
+    """
+    Takes in an NPCS entry.
+    Returns True if the NPCS bytes indicate that there should be a single NPCL entry
+    due to the start time equalling the end time.
+    """
+    bytes = get_from_entry(npcs_entry, "bytes")
+    byte1 = bytes[2:4]
+    byte2 = bytes[4:6]
+    return byte1 == byte2
+
 def get_location_data(lvb_dict: dict, verbose=False) -> list[Location]:
     """
     Takes in an lvb dict of a region as given by get_lvb_data.
@@ -559,15 +572,24 @@ def initialise_region(region: str) -> Location:
 def location_a_contains_b(location_a: Location | RestSpot, location_b: Location | RestSpot) -> bool:
     """
     Takes in two Locations (or RestSpots).
-    Returns True if the second location is entirely contained within the first, and False otherwise.
+    Returns True if the second location is contained within the first, and False otherwise.
 
     For the vertical axis, we only check if the midpoint of the second is contained within the first (there are some locations that are obviously "contained" but where the second actually extends a bit above the first).
+
+    For horizontal containment, the criterion is "Is the centre of (the bounding box of) b contained
+    within (the perimeter of) a, and is b's area less than or equal to that of a's".
+    More natural criteria (such as simple polygon-in-polygon containment) are too strict.
     """
     b_avg_y = (location_b.lb + location_b.ub) / 2
     if b_avg_y > location_a.ub or b_avg_y < location_a.lb:
         return False
     
-    return location_a.polygon.contains(location_b.polygon)
+    b_xmin, b_zmin, b_xmax, b_zmax = location_b.polygon.bounds
+    b_centre = Point((b_xmax+b_xmin)/2, (b_zmin+b_zmax)/2)
+    b_centre_in_a = location_a.polygon.contains(b_centre)
+    b_leq_a = location_b.polygon.area <= location_a.polygon.area
+    #return location_a.polygon.contains(location_b.polygon)
+    return b_centre_in_a and b_leq_a
 
 def coordinate_within_location(coordinate: Coordinate, location: Location | RestSpot) -> bool:
     """
@@ -608,7 +630,7 @@ def create_place_tree(lvb_dict: dict, region: str, verbose=False) -> Place:
             print(f"Adding {num} {name} to the tree...")
 
         for i, location in enumerate(location_list):
-            if verbose:
+            if verbose and (i % 10 == 0 or i == num - 1):
                 bdat_id = location.bdat_id
                 print(f"{i+1}/{num}: {bdat_id}")
             place_tree.insert_location_recursive(location)
@@ -633,7 +655,7 @@ def fill_place_tree_with_magic(place_tree: Place, lvb_dict: dict, magic: str, ve
         print(f"Adding {num} {magic} to place tree...")
 
     for i, poi in enumerate(poi_data):
-        if verbose:
+        if verbose and (i % 10 == 0 or i == num - 1):
             bdat_id = poi.bdat_id
             print(f"{i+1}/{num}: {bdat_id}")
 
@@ -660,9 +682,13 @@ def convert_hashid_to_name(bdat_id: str, gmk_location: pd.DataFrame, location_na
         return bdat_id
     return location_names.loc[name_id, "name"]
 
-#############################################################################
+# To enter debug mode: uncomment the below lines, replace with paths to your own TSVs of the maXXa_GMK_Location and msg_location_name_en bdats (as processed by https://github.com/Sir-Teatei-Moonlight/xenoblade-bdat-tools/blob/root/bdat2_reader.py and the hash mapper in the same repo), and replace the to_json method of the Place class with to_json_debug. (It needs to be called to_json or else xeno_lvb won't work.)
 
-# Main for testing
+# gmk_location_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/ma01a_GMK_Location.tsv")
+# location_names_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/msg_location_name_en.tsv")
+# gmk_location, location_names = get_location_bdats(gmk_location_path, location_names_path)
+
+#############################################################################
 
 from json import JSONEncoder
 def _default(self, obj):
@@ -671,36 +697,39 @@ _default.default = JSONEncoder().default
 JSONEncoder.default = _default
 JSON_INCL_BYTES = True
 
-FIELDS_default = ["ENMY", "NPC ", "TBOX", "PREC"]
-FIELDS_ma40a = ["ENMY", "NPC ", "TBOX", "PREC", "RBOX", "ETHP", "ARCH", "ENSP", "EAFF", "ENFO", "KIEV"]
+def main(region, unpack_xbtool_path, outpath, verbose=False):
+    if verbose:
+        print("Getting lvb data...")
+    lvb_data = get_lvb_data(region, unpack_xbtool_path, verbose=verbose)
 
-if __name__ == "__main__":
-    # region = sys.argv[1]
-    # unpack_xbtool_path = Path(sys.argv[2])
-    # outpath = Path(sys.argv[3])
-    region = "ma40a"
-    unpack_xbtool_path = Path("C:/Users/rtg14/Desktop/Not_work/My_Programs/XC3_files_2.2.0/unpack_xbtool")
-    outpath = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/xeno-lvb/output/{region}_tree_full.json")
+    if verbose:
+        print("Creating place tree...")
+    place_tree = create_place_tree(lvb_data, region, verbose=verbose)
 
-    print("Getting lvb data...")
-    lvb_data = get_lvb_data(region, unpack_xbtool_path, verbose=True)
-
-    print("Creating place tree...")
-    place_tree = create_place_tree(lvb_data, region, verbose=True)
-
-    print("Filling place tree with tbox data...")
+    if verbose:
+        print("Filling place tree with object data...")
     if region == "ma40a":
-        fields = FIELDS_ma40a
+        fields = ["ENMY", "NPC ", "TBOX", "PREC", "RBOX", "ETHP", "ARCH", "ENSP", "EAFF", "ENFO", "KIEV"]
     else:
-        fields = FIELDS_default
+        fields = ["ENMY", "NPC ", "TBOX", "PREC"]
     for magic in fields:
-        fill_place_tree_with_magic(place_tree, lvb_data, magic, verbose=True)
+        fill_place_tree_with_magic(place_tree, lvb_data, magic, verbose=verbose) 
 
-    print("Writing to file...")
-    gmk_location_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/{region}_GMK_Location.tsv")
-    location_names_path = Path(f"C:/Users/rtg14/Desktop/Not_work/My_Programs/wiki_bdat_processing/XC3_colonies/bdats/msg_location_name_en.tsv")
-    gmk_location, location_names = get_location_bdats(gmk_location_path, location_names_path)
+    if verbose:
+        print("Writing to file...")
 
     outfile = open(outpath, "w+", encoding="utf-8-sig")
     outfile.write(json.dumps(place_tree, indent=1))
     outfile.close()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("region", help="The ID of the region to make a tree for (e.g. ma01a for the Aetia Region)")
+    parser.add_argument("unpack_xbtool_path", help="The path to the output of unpack_xbtool. This directory should have subfolders such as gmk_r, dlc1, dlc2, bdat, etc. (Only gmk_r and the dlc folders are used.)")
+    parser.add_argument("outpath", help="The filename to save the output json string to.")
+    parser.add_argument("-v", "--verbose", help="increase output verbosity",
+                    action="store_true")
+    args = parser.parse_args()
+
+    main(args.region, Path(args.unpack_xbtool_path), Path(args.outpath), args.verbose)
